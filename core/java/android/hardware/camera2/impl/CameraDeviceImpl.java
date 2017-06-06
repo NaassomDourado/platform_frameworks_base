@@ -17,7 +17,6 @@
 package android.hardware.camera2.impl;
 
 import static android.hardware.camera2.CameraAccessException.CAMERA_IN_USE;
-
 import static com.android.internal.util.function.pooled.PooledLambda.obtainRunnable;
 
 import android.annotation.NonNull;
@@ -25,6 +24,8 @@ import android.content.Context;
 import android.app.ActivityThread;
 import android.graphics.ImageFormat;
 import android.hardware.ICameraService;
+import android.app.ActivityThread;
+import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -55,8 +56,8 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
-import android.os.SystemClock;
 import android.os.SystemProperties;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
@@ -150,7 +151,7 @@ public class CameraDeviceImpl extends CameraDevice
     private int mNextSessionId = 0;
 
     private final int mAppTargetSdkVersion;
-    private final boolean mIsPrivilegedApp;
+    private boolean mIsPrivilegedApp = false;
 
     private ExecutorService mOfflineSwitchService;
     private CameraOfflineSessionImpl mOfflineSessionImpl;
@@ -1440,73 +1441,14 @@ public class CameraDeviceImpl extends CameraDevice
         }
     }
 
-    private boolean checkInputConfigurationWithStreamConfigurationsAs(
-            InputConfiguration inputConfig, StreamConfigurationMap configMap) {
-        int[] inputFormats = configMap.getInputFormats();
-        boolean validFormat = false;
-        int inputFormat = inputConfig.getFormat();
-        for (int format : inputFormats) {
-            if (format == inputFormat) {
-                validFormat = true;
-            }
-        }
-
-        if (validFormat == false) {
-            return false;
-        }
-
-        boolean validSize = false;
-        Size[] inputSizes = configMap.getInputSizes(inputFormat);
-        for (Size s : inputSizes) {
-            if (inputConfig.getWidth() == s.getWidth() &&
-                    inputConfig.getHeight() == s.getHeight()) {
-                validSize = true;
-            }
-        }
-
-        if (validSize == false) {
-            return false;
-        }
-        return true;
-    }
-
-    private boolean checkInputConfigurationWithStreamConfigurations(
-            InputConfiguration inputConfig, boolean maxResolution) {
-        // Check if either this logical camera or any of its physical cameras support the
-        // input config. If they do, the input config is valid.
-        CameraCharacteristics.Key<StreamConfigurationMap> ck =
-                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP;
-
-        if (maxResolution) {
-            ck = CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION;
-        }
-
-        StreamConfigurationMap configMap = mCharacteristics.get(ck);
-
-        if (configMap != null &&
-                checkInputConfigurationWithStreamConfigurationsAs(inputConfig, configMap)) {
-            return true;
-        }
-
-        for (Map.Entry<String, CameraCharacteristics> entry : mPhysicalIdsToChars.entrySet()) {
-            configMap = entry.getValue().get(ck);
-
-            if (configMap != null &&
-                    checkInputConfigurationWithStreamConfigurationsAs(inputConfig, configMap)) {
-                // Input config supported.
-                return true;
-            }
-        }
-        return false;
-    }
-
     private boolean checkPrivilegedAppList() {
         String packageName = ActivityThread.currentOpPackageName();
         String packageList = SystemProperties.get("persist.vendor.camera.privapp.list");
 
         if (packageList.length() > 0) {
-            String[] packages = packageList.split(",");
-            for (String str : packages) {
+            TextUtils.StringSplitter splitter = new TextUtils.SimpleStringSplitter(',');
+            splitter.setString(packageList);
+            for (String str : splitter) {
                 if (packageName.equals(str)) {
                     return true;
                 }
@@ -1528,6 +1470,15 @@ public class CameraDeviceImpl extends CameraDevice
         if (inputConfig.isMultiResolution()) {
             MultiResolutionStreamConfigurationMap configMap = mCharacteristics.get(
                     CameraCharacteristics.SCALER_MULTI_RESOLUTION_STREAM_CONFIGURATION_MAP);
+
+            /*
+             * don't check input format and size,
+             * if the package name is in the white list
+             */
+            if (isPrivilegedApp()) {
+                Log.w(TAG, "ignore input format/size check for white listed app");
+                return;
+            }
 
             /*
              * don't check input format and size,
